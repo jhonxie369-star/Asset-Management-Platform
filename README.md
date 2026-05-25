@@ -79,6 +79,25 @@ backend/src/modules/fingerprints/rules/
 - TLS 证书信息
 - WebPath 结果反哺指纹识别
 
+### 指纹库管理
+
+指纹规则可以在前端 `指纹库` 页面维护，也可以通过 API/CLI 自动化管理。
+
+- 内置规则来自 `backend/src/modules/fingerprints/rules/`，启动时会同步到数据库。
+- 内置规则支持启用/禁用；重启后会保留启用状态，同时跟随代码规则库升级。
+- 自定义规则来源为 `user`，支持新增、编辑、删除。
+- fingerprint 模块每次执行都会读取数据库中的启用规则，因此调整规则不需要重启服务。
+
+常用 API：
+
+```text
+GET    /api/fingerprint-rules
+POST   /api/fingerprint-rules
+PUT    /api/fingerprint-rules/:id
+DELETE /api/fingerprint-rules/:id
+POST   /api/fingerprint-rules/reset-builtin
+```
+
 ### 认证面巡检覆盖
 
 认证 tester 位于：
@@ -262,6 +281,7 @@ http://localhost:3400/
 - `活端点与服务`：查看当前 ip:port、协议、产品、版本、Title、Web 路径、机器、公私网。
 - `问题发现`：查看弱口令/未授权/危险路径，支持筛选、状态流转、下载报告。
 - `指纹统计`：查看历史指纹、现存指纹、每日新增指纹和明细。
+- `指纹库`：查看内置/自定义指纹规则，支持筛选、启用/禁用、复制和新增自定义规则。
 - `风险路径规则`：配置 WebPath 风险检测规则并重评估历史路径。
 
 ## 开发命令

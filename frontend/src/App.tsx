@@ -4,6 +4,7 @@ import Endpoints from './pages/Endpoints';
 import Tasks from './pages/Tasks';
 import Findings from './pages/Findings';
 import FingerprintStats from './pages/FingerprintStats';
+import FingerprintRules from './pages/FingerprintRules';
 import WebPathRules from './pages/WebPathRules';
 import PortLists from './pages/PortLists';
 import AssetLists from './pages/AssetLists';
@@ -13,6 +14,7 @@ import { api, setUnauthorizedHandler } from './api';
 const navItems = [
   { path: '/endpoints', label: '活端点与服务' },
   { path: '/fingerprints', label: '指纹统计' },
+  { path: '/fingerprint-rules', label: '指纹库' },
   { path: '/tasks', label: '任务中心' },
   { path: '/findings', label: '问题发现' },
   { path: '/web-path-rules', label: '风险路径规则' },
@@ -95,6 +97,7 @@ export default function App() {
           <Route path="/" element={<Navigate to="/endpoints" replace />} />
           <Route path="/endpoints" element={<Endpoints />} />
           <Route path="/fingerprints" element={<FingerprintStats />} />
+          <Route path="/fingerprint-rules" element={<FingerprintRules />} />
           <Route path="/tasks" element={<Tasks />} />
           <Route path="/findings" element={<Findings />} />
           <Route path="/web-path-rules" element={<WebPathRules />} />

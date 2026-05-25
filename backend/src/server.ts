@@ -17,12 +17,14 @@ async function main() {
 
   // 种子内置指纹规则（幂等 upsert by id）
   const existing = store.getAll('fingerprintRules') as FingerprintRule[];
-  const existingIds = new Set(existing.filter(r => r.source === 'builtin').map(r => r.id));
+  const existingById = new Map(existing.filter(r => r.source === 'builtin').map(r => [r.id, r]));
   const builtin = getBuiltinFingerprintRules();
   let added = 0, updated = 0;
   for (const rule of builtin) {
-    if (existingIds.has(rule.id)) {
-      store.upsert('fingerprintRules', rule);
+    const existingRule = existingById.get(rule.id);
+    if (existingRule) {
+      // 保留页面上对内置规则的启用/禁用和标签微调，其余内容跟随代码规则库升级。
+      store.upsert('fingerprintRules', { ...rule, enabled: existingRule.enabled, tags: existingRule.tags?.length ? existingRule.tags : rule.tags });
       updated++;
     } else {
       store.insert('fingerprintRules', rule);

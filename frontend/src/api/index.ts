@@ -91,6 +91,15 @@ export const api = {
   updateWebPathRule: (id: string, data: any) => request<any>(`/web-path-rules/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(data) }),
   deleteWebPathRule: (id: string) => request<any>(`/web-path-rules/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   reevaluateWebPathRules: () => request<any>('/web-path-rules/reevaluate', { method: 'POST' }),
+  // Fingerprint rules
+  getFingerprintRules: (params?: Record<string, string | number | boolean>) => {
+    const qs = params ? '?' + new URLSearchParams(params as any).toString() : '';
+    return request<any>(`/fingerprint-rules${qs}`);
+  },
+  createFingerprintRule: (data: any) => request<any>('/fingerprint-rules', { method: 'POST', body: JSON.stringify(data) }),
+  updateFingerprintRule: (id: string, data: any) => request<any>(`/fingerprint-rules/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(data) }),
+  deleteFingerprintRule: (id: string) => request<any>(`/fingerprint-rules/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  resetBuiltinFingerprintRules: () => request<any>('/fingerprint-rules/reset-builtin', { method: 'POST' }),
   // PortLists
   getPortLists: () => request<any>('/port-lists'),
   createPortList: (data: any) => request<any>('/port-lists', { method: 'POST', body: JSON.stringify(data) }),

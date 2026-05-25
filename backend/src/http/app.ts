@@ -17,6 +17,7 @@ import { authRoutes, requireAuth } from './auth.js';
 import { apiKeyRoutes } from './api-keys.js';
 import { aiRoutes } from './ai.js';
 import { webPathRuleRoutes } from './web-path-rules.js';
+import { fingerprintRuleRoutes } from './fingerprint-rules.js';
 
 export function createApp(store: Store, engine: TaskEngine): express.Application {
   const app = express();
@@ -50,6 +51,7 @@ export function createApp(store: Store, engine: TaskEngine): express.Application
   app.use('/api/runs', runRoutes(store));
   app.use('/api/web-paths', webPathRoutes(store));
   app.use('/api/web-path-rules', webPathRuleRoutes(store));
+  app.use('/api/fingerprint-rules', fingerprintRuleRoutes(store));
   app.use('/api/port-lists', portListRoutes(store));
   app.use('/api/asset-lists', assetListRoutes(store));
   app.use('/api/sources', sourceRoutes(store));
