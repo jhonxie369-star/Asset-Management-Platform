@@ -1,0 +1,176 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SASP_URL="${SASP_URL:-http://127.0.0.1:3400}"
+SASP_API_KEY="${SASP_API_KEY:-}"
+SASP_USER="${SASP_USER:-${SASP_USERNAME:-}}"
+SASP_PASS="${SASP_PASS:-${SASP_PASSWORD:-}}"
+export SASP_USER SASP_PASS
+JSON=0
+COOKIE_FILE="${TMPDIR:-/tmp}/sasp-cli-cookie.$$"
+trap 'rm -f "$COOKIE_FILE"' EXIT
+
+usage() {
+  cat <<'USAGE'
+SASP CLI
+
+Usage:
+  sasp-cli [--json] <command> [args]
+
+Auth:
+  export SASP_URL=http://127.0.0.1:3400
+  export SASP_API_KEY=sasp_xxx.yyy
+  # or
+  export SASP_USER=admin SASP_PASS=...
+
+Commands:
+  status
+  dashboard
+  assets [query]
+  asset-lists
+  asset-list-create <json_file|->
+  asset-list-update <asset_list_id> <json_file|->
+  asset-list-delete <asset_list_id>
+  port-lists
+  services
+  endpoints
+  findings
+  tasks
+  task-create <json_file|->
+  task-update <task_id> <json_file|->
+  task-delete <task_id>
+  runs
+  modules
+  task-run <task_id>
+  ai-context [asset_or_query]
+  api-keys
+  api-key-create <name> [scope1,scope2]
+  api-key-revoke <key_id>
+  manifest
+USAGE
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --json) JSON=1; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) break ;;
+  esac
+done
+
+cmd="${1:-}"; [[ -n "$cmd" ]] || { usage; exit 1; }
+shift || true
+
+json_pp() {
+  if [[ "$JSON" == "1" ]]; then cat; else python3 -m json.tool 2>/dev/null || cat; fi
+}
+
+read_json_arg() {
+  local src="${1:-}"
+  if [[ -z "$src" ]]; then
+    echo "json_file or - is required" >&2
+    exit 1
+  fi
+  if [[ "$src" == "-" ]]; then
+    cat
+  else
+    cat "$src"
+  fi
+}
+
+curl_api() {
+  local method="$1" path="$2" body="${3:-}"
+  local args=(-sS -X "$method" "$SASP_URL$path" -H 'Content-Type: application/json')
+  if [[ -n "$SASP_API_KEY" ]]; then
+    args+=(-H "Authorization: Bearer $SASP_API_KEY")
+  else
+    if [[ -z "$SASP_USER" || -z "$SASP_PASS" ]]; then
+      echo '{"ok":false,"error":"set SASP_API_KEY or SASP_USER/SASP_PASS"}' >&2
+      exit 2
+    fi
+    curl -sS -c "$COOKIE_FILE" -X POST "$SASP_URL/api/auth/login" -H 'Content-Type: application/json' \
+      -d "$(python3 -c 'import json,os; print(json.dumps({"username":os.environ["SASP_USER"],"password":os.environ["SASP_PASS"]}))')" >/dev/null
+    args+=(-b "$COOKIE_FILE")
+  fi
+  if [[ -n "$body" ]]; then args+=(-d "$body"); fi
+  curl "${args[@]}"
+}
+
+case "$cmd" in
+  status) curl_api GET /api/auth/status | json_pp ;;
+  dashboard) curl_api GET /api/dashboard | json_pp ;;
+  assets)
+    q="${1:-}"; path="/api/assets?pageSize=50"; [[ -n "$q" ]] && path="$path&q=$(python3 -c 'import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))' "$q")"
+    curl_api GET "$path" | json_pp ;;
+  asset-lists) curl_api GET /api/asset-lists | json_pp ;;
+  asset-list-create)
+    src="${1:-}"; body="$(read_json_arg "$src")"
+    curl_api POST /api/asset-lists "$body" | json_pp ;;
+  asset-list-update)
+    id="${1:-}"; src="${2:-}"
+    [[ -n "$id" ]] || { echo 'asset-list-update requires asset_list_id' >&2; exit 1; }
+    body="$(read_json_arg "$src")"
+    curl_api PUT "/api/asset-lists/$id" "$body" | json_pp ;;
+  asset-list-delete)
+    id="${1:-}"; [[ -n "$id" ]] || { echo 'asset-list-delete requires asset_list_id' >&2; exit 1; }
+    curl_api DELETE "/api/asset-lists/$id" | json_pp ;;
+  port-lists) curl_api GET /api/port-lists | json_pp ;;
+  services) curl_api GET /api/services | json_pp ;;
+  endpoints) curl_api GET /api/endpoints | json_pp ;;
+  findings) curl_api GET /api/findings | json_pp ;;
+  tasks) curl_api GET /api/tasks | json_pp ;;
+  task-create)
+    src="${1:-}"; body="$(read_json_arg "$src")"
+    curl_api POST /api/tasks "$body" | json_pp ;;
+  task-update)
+    id="${1:-}"; src="${2:-}"
+    [[ -n "$id" ]] || { echo 'task-update requires task_id' >&2; exit 1; }
+    body="$(read_json_arg "$src")"
+    curl_api PUT "/api/tasks/$id" "$body" | json_pp ;;
+  task-delete)
+    id="${1:-}"; [[ -n "$id" ]] || { echo 'task-delete requires task_id' >&2; exit 1; }
+    curl_api DELETE "/api/tasks/$id" | json_pp ;;
+  runs) curl_api GET /api/runs | json_pp ;;
+  modules) curl_api GET /api/modules | json_pp ;;
+  task-run)
+    id="${1:-}"; [[ -n "$id" ]] || { echo 'task-run requires task_id' >&2; exit 1; }
+    curl_api POST "/api/tasks/$id/run" | json_pp ;;
+  ai-context)
+    q="${1:-}"; path="/api/ai/context"; [[ -n "$q" ]] && path="$path?asset=$(python3 -c 'import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))' "$q")"
+    curl_api GET "$path" | json_pp ;;
+  api-keys) curl_api GET /api/api-keys | json_pp ;;
+  api-key-create)
+    name="${1:-}"; scopes="${2:-read:*}"; [[ -n "$name" ]] || { echo 'api-key-create requires name' >&2; exit 1; }
+    body=$(python3 -c 'import json,sys; print(json.dumps({"name":sys.argv[1],"scopes":[s for s in sys.argv[2].split(",") if s]}))' "$name" "$scopes")
+    curl_api POST /api/api-keys "$body" | json_pp ;;
+  api-key-revoke)
+    key_id="${1:-}"; [[ -n "$key_id" ]] || { echo 'api-key-revoke requires key_id' >&2; exit 1; }
+    curl_api DELETE "/api/api-keys/$key_id" | json_pp ;;
+  manifest)
+    cat <<'JSON'
+{
+  "name": "sasp-cli",
+  "commands": [
+    {"name":"assets","description":"List assets","writes":false,"required_scopes":["read:assets"]},
+    {"name":"asset-lists","description":"List asset lists","writes":false,"required_scopes":["read:assets"]},
+    {"name":"asset-list-create","description":"Create an asset list from JSON","writes":true,"required_scopes":["assets:write"]},
+    {"name":"asset-list-update","description":"Update an asset list from JSON","writes":true,"required_scopes":["assets:write"]},
+    {"name":"asset-list-delete","description":"Delete an asset list by id","writes":true,"required_scopes":["assets:write"]},
+    {"name":"port-lists","description":"List port lists","writes":false,"required_scopes":["read:ports"]},
+    {"name":"services","description":"List services","writes":false,"required_scopes":["read:services"]},
+    {"name":"endpoints","description":"List live endpoints","writes":false,"required_scopes":["read:endpoints"]},
+    {"name":"findings","description":"List findings","writes":false,"required_scopes":["read:findings"]},
+    {"name":"tasks","description":"List tasks","writes":false,"required_scopes":["read:tasks"]},
+    {"name":"task-create","description":"Create a task from JSON","writes":true,"required_scopes":["tasks:write"]},
+    {"name":"task-update","description":"Update a task from JSON","writes":true,"required_scopes":["tasks:write"]},
+    {"name":"task-delete","description":"Delete a task by id","writes":true,"required_scopes":["tasks:write"]},
+    {"name":"task-run","description":"Run a task by id","writes":true,"required_scopes":["tasks:write"]},
+    {"name":"ai-context","description":"Get structured AI context for an asset/query","writes":false,"required_scopes":["read:*"]},
+    {"name":"api-key-create","description":"Create an API key; full key is returned once","writes":true,"required_scopes":["api_keys:write"]},
+    {"name":"api-key-revoke","description":"Revoke an API key by key_id","writes":true,"required_scopes":["api_keys:write"]}
+  ]
+}
+JSON
+    ;;
+  *) usage; exit 1 ;;
+esac

@@ -1,0 +1,13 @@
+node_modules/
+frontend/dist/
+backend/dist/
+backend/data/*
+!backend/data/.gitkeep
+.env
+.env.*
+!.env.example
+.sasp.pid
+sasp.log
+*.log
+*.tsbuildinfo
+.DS_Store
