@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../api';
 import { beijingFileTimestamp, formatBeijingTime } from '../utils/time';
 
@@ -89,6 +89,7 @@ export default function FingerprintStats() {
   const [q, setQ] = useState('');
   const [scope, setScope] = useState('');
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const detailRef = useRef<HTMLDivElement | null>(null);
 
   const params = useMemo(() => {
     const p: Record<string, string> = { mode };
@@ -152,6 +153,14 @@ export default function FingerprintStats() {
     ]);
     const csv = [headers.join(','), ...rows.map(row => row.map(csvEscape).join(','))].join('\n');
     download(`fingerprints-daily-new-${beijingFileTimestamp()}.csv`, '\ufeff' + csv, 'text/csv;charset=utf-8');
+  };
+
+  const showDailyDetail = (nextDate: string) => {
+    setMode('new');
+    setDate(nextDate);
+    setTimeout(() => {
+      detailRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 80);
   };
 
   const modeTitle: Record<typeof mode, string> = {
@@ -241,7 +250,7 @@ export default function FingerprintStats() {
                     {d.topFingerprints.map(x => <span key={x.fingerprint} className="badge badge-info" style={{ marginRight: '0.25rem', marginBottom: '0.2rem' }}>{x.fingerprint} × {x.count}</span>)}
                   </td>
                   <td style={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>{d.topPorts.map(x => `${x.port}×${x.count}`).join(', ')}</td>
-                  <td><button className="btn" onClick={() => setDate(d.date)}>{d.date === data.date ? '当前明细' : '看明细'}</button></td>
+                  <td><button className="btn" onClick={() => showDailyDetail(d.date)}>{d.date === data.date ? '查看当前明细' : '看明细'}</button></td>
                 </tr>
               ))}
             </tbody>
@@ -249,7 +258,7 @@ export default function FingerprintStats() {
         </div>
       ) : null}
 
-      <div className="card">
+      <div className="card" ref={detailRef}>
         <h3 style={{ marginTop: 0 }}>{modeTitle[mode]}</h3>
         <p style={{ marginTop: '-0.4rem', color: 'var(--text-dim)', fontSize: '0.78rem' }}>{modeDesc[mode]}</p>
         {loading && <p style={{ color: 'var(--text-dim)' }}>加载中...</p>}
