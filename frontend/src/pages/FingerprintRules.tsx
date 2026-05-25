@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { api } from '../api';
+import { Pagination } from '../components/Pagination';
 
 const categories = ['database', 'middleware', 'webserver', 'cms', 'framework', 'devops', 'monitoring', 'other'];
 const matcherTypes = ['banner', 'header', 'body', 'title', 'favicon', 'cert'];
@@ -53,14 +54,26 @@ export default function FingerprintRules() {
   const [message, setMessage] = useState('');
   const [editing, setEditing] = useState<any | null>(null);
   const [filters, setFilters] = useState({ q: '', category: '', source: '', enabled: '', matcherType: '' });
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(50);
+  const [total, setTotal] = useState(0);
+  const [totalPages, setTotalPages] = useState(1);
 
-  const load = async () => {
+  const load = async (nextPage = page, nextPageSize = pageSize, nextFilters = filters) => {
     setLoading(true);
-    const params = Object.fromEntries(Object.entries(filters).filter(([, v]) => v !== ''));
+    const params = {
+      ...Object.fromEntries(Object.entries(nextFilters).filter(([, v]) => v !== '')),
+      page: nextPage,
+      pageSize: nextPageSize,
+    };
     const res: any = await api.getFingerprintRules(params);
     if (res.ok) {
       setRules(res.data || []);
       setStats(res.stats);
+      setPage(res.page || nextPage);
+      setPageSize(res.pageSize || nextPageSize);
+      setTotal(res.total || 0);
+      setTotalPages(res.totalPages || 1);
     } else {
       setMessage(res.error || '加载失败');
     }
@@ -158,8 +171,12 @@ export default function FingerprintRules() {
             <option value="">全部 matcher</option>
             {matcherTypes.map(t => <option key={t} value={t}>{t}</option>)}
           </select>
-          <button className="btn btn-primary" onClick={load}>{loading ? '加载中…' : '筛选'}</button>
-          <button className="btn" onClick={() => { setFilters({ q: '', category: '', source: '', enabled: '', matcherType: '' }); setTimeout(load, 0); }}>重置</button>
+          <button className="btn btn-primary" onClick={() => load(1)}>{loading ? '加载中…' : '筛选'}</button>
+          <button className="btn" onClick={() => {
+            const empty = { q: '', category: '', source: '', enabled: '', matcherType: '' };
+            setFilters(empty);
+            load(1, pageSize, empty);
+          }}>重置</button>
         </div>
         <div className="form-row" style={{ flexWrap: 'wrap', marginTop: '0.6rem' }}>
           <button className="btn btn-primary" onClick={() => setEditing(toForm())}>新增自定义规则</button>
@@ -224,6 +241,14 @@ export default function FingerprintRules() {
       )}
 
       <div className="card">
+        <Pagination
+          page={page}
+          pageSize={pageSize}
+          total={total}
+          totalPages={totalPages}
+          onPageChange={p => load(p)}
+          onPageSizeChange={s => load(1, s)}
+        />
         {grouped.map(([category, items]) => (
           <div key={category} style={{ marginBottom: '1rem' }}>
             <h3 style={{ margin: '0.4rem 0' }}>{category} <span style={{ color: 'var(--text-dim)', fontSize: '0.8rem' }}>{items.length} 条</span></h3>
@@ -265,6 +290,14 @@ export default function FingerprintRules() {
             </table>
           </div>
         ))}
+        <Pagination
+          page={page}
+          pageSize={pageSize}
+          total={total}
+          totalPages={totalPages}
+          onPageChange={p => load(p)}
+          onPageSizeChange={s => load(1, s)}
+        />
       </div>
     </div>
   );

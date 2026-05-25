@@ -3,6 +3,7 @@ import { v4 as uuid } from 'uuid';
 import type { FingerprintMatcher, FingerprintRule } from '@sasp/shared';
 import { Store } from '../storage/store.js';
 import { getBuiltinFingerprintRules } from '../modules/fingerprints/index.js';
+import { paginate, parsePageParams } from './paginate.js';
 
 const CATEGORIES = new Set(['database', 'middleware', 'webserver', 'cms', 'framework', 'devops', 'monitoring', 'other']);
 const MATCHER_TYPES = new Set(['banner', 'header', 'body', 'title', 'favicon', 'cert']);
@@ -104,7 +105,9 @@ export function fingerprintRuleRoutes(store: Store): Router {
       || (a.priority ?? 3) - (b.priority ?? 3)
       || a.name.localeCompare(b.name)
     );
-    res.json({ ok: true, data: rules, total: rules.length, stats: stats(rules) });
+    const params = parsePageParams(req.query, { maxPageSize: 500 });
+    const paged = paginate(rules, params);
+    res.json({ ok: true, ...paged, stats: stats(rules) });
   });
 
   r.get('/stats', (_req, res) => {
