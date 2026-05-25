@@ -281,3 +281,91 @@ npm start
 - 不要提交 `.env`、数据库文件、扫描结果、资产列表、日志或 API Key。
 - 弱口令和未授权检测会对目标产生真实连接请求，生产环境请控制并发、超时和执行窗口。
 - Web 路径扫描请求量大，公网扫描建议分批执行，并按端口/服务类型排除数据库端口。
+
+## CLI 自动化入口
+
+项目内置 `cli/sasp-cli`，用于 AI/CI/运维脚本通过稳定命令访问平台 API，避免直接改数据库或手写 curl。
+
+### 认证方式
+
+推荐使用 API Key：
+
+```bash
+export SASP_URL=http://127.0.0.1:3400
+export SASP_API_KEY=sasp_xxx.yyy
+cli/sasp-cli status
+```
+
+也可以用 Web 账号临时登录：
+
+```bash
+export SASP_USER=admin
+export SASP_PASS=change-me
+cli/sasp-cli modules
+```
+
+### 常用读取命令
+
+```bash
+cli/sasp-cli dashboard
+cli/sasp-cli asset-lists
+cli/sasp-cli port-lists
+cli/sasp-cli endpoints --scope public --has-service true --with-service true --page-size 100
+cli/sasp-cli findings kind=security lifecycle=current severity=critical scope=public
+cli/sasp-cli findings-stats kind=security scope=public dataCategory=database
+cli/sasp-cli fingerprint-daily days=14
+cli/sasp-cli task-runs --page-size 20
+cli/sasp-cli task-run-report <task_run_id>
+cli/sasp-cli ai-context <ip_or_instance_or_keyword>
+```
+
+### 常用写入命令
+
+```bash
+cli/sasp-cli asset-list-create asset-list.json
+cli/sasp-cli port-list-create port-list.json
+cli/sasp-cli task-create task.json
+cli/sasp-cli task-run <task_id>
+cli/sasp-cli finding-status <finding_id> confirmed
+cli/sasp-cli web-path-rules-reevaluate
+```
+
+JSON 支持文件或 stdin：
+
+```bash
+cat task.json | cli/sasp-cli task-create -
+```
+
+### CloudQuery 同步
+
+```bash
+cli/sasp-cli cloudquery-status
+cli/sasp-cli cloudquery-preview public
+cli/sasp-cli cloudquery-sync sync-public.json
+cli/sasp-cli cloudquery-sync-batch sync-batch.json
+```
+
+### 导出报告
+
+```bash
+cli/sasp-cli --out db-report.json task-run-export <task_run_id> full json
+cli/sasp-cli --out services.csv task-run-export <task_run_id> services csv
+cli/sasp-cli --out assets.csv asset-list-export <asset_list_id> csv
+```
+
+### 通用 API 命令
+
+新增 API 尚未封装成专用命令时，可以直接调用：
+
+```bash
+cli/sasp-cli api GET /modules
+cli/sasp-cli api POST /tasks task.json
+cli/sasp-cli api PUT /findings/<finding_id>/status status.json
+```
+
+查看完整命令：
+
+```bash
+cli/sasp-cli --help
+cli/sasp-cli manifest
+```

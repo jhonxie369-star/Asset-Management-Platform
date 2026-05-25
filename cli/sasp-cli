@@ -5,54 +5,195 @@ SASP_URL="${SASP_URL:-http://127.0.0.1:3400}"
 SASP_API_KEY="${SASP_API_KEY:-}"
 SASP_USER="${SASP_USER:-${SASP_USERNAME:-}}"
 SASP_PASS="${SASP_PASS:-${SASP_PASSWORD:-}}"
-export SASP_USER SASP_PASS
-JSON=0
+RAW_JSON=0
+OUT_FILE=""
 COOKIE_FILE="${TMPDIR:-/tmp}/sasp-cli-cookie.$$"
+export SASP_USER SASP_PASS
 trap 'rm -f "$COOKIE_FILE"' EXIT
 
 usage() {
   cat <<'USAGE'
-SASP CLI
+SASP CLI - 安全资产扫描平台自动化入口
 
 Usage:
-  sasp-cli [--json] <command> [args]
+  sasp-cli [global-options] <command> [args]
+
+Global options:
+  --url <url>          API base url, default: SASP_URL or http://127.0.0.1:3400
+  --api-key <key>      Bearer API key, default: SASP_API_KEY
+  --user <user>        Session username, default: SASP_USER/SASP_USERNAME
+  --pass <pass>        Session password, default: SASP_PASS/SASP_PASSWORD
+  --json, --raw        Output raw JSON instead of pretty JSON
+  --out <file>         Save response/download to file
+  -h, --help           Show help
 
 Auth:
   export SASP_URL=http://127.0.0.1:3400
   export SASP_API_KEY=sasp_xxx.yyy
   # or
-  export SASP_USER=admin SASP_PASS=...
+  export SASP_USER=admin SASP_PASS=change-me
 
-Commands:
-  status
-  dashboard
-  assets [query]
-  asset-lists
-  asset-list-create <json_file|->
-  asset-list-update <asset_list_id> <json_file|->
-  asset-list-delete <asset_list_id>
-  port-lists
-  services
-  endpoints
-  findings
-  tasks
-  task-create <json_file|->
-  task-update <task_id> <json_file|->
-  task-delete <task_id>
-  runs
-  modules
-  task-run <task_id>
+Read commands:
+  status | dashboard | modules | manifest
+  assets [q] [filters...]                  asset-get <id>
+  asset-lists                              asset-list-get <id>
+  port-lists                               port-list-get <id>
+  endpoints [filters...]                   endpoint-get <id> | endpoint-facets [filters...]
+  services [filters...]                    service-get <id>
+  web-paths [filters...]
+  findings [filters...]                    findings-stats [filters...] | findings-by-instance [filters...]
+  finding-trend <instance_key> [days]
+  fingerprint-daily [filters...]
+  runs [filters...]                        run-report <run_id>
+  task-runs [filters...]                   task-run-report <task_run_id>
+  tasks [--scheduled]                      task-get <task_id>
+  cloudquery-status
   ai-context [asset_or_query]
   api-keys
-  api-key-create <name> [scope1,scope2]
-  api-key-revoke <key_id>
-  manifest
+  web-path-rules
+
+Write commands:
+  asset-list-create <json_file|->          asset-list-update <id> <json_file|->
+  asset-list-delete <id>                   asset-list-export <id> [csv|json]
+  port-list-create <json_file|->           port-list-update <id> <json_file|->
+  port-list-delete <id>
+  task-create <json_file|->                task-update <id> <json_file|->
+  task-delete <id>                         task-run <task_id>
+  finding-status <finding_id> <open|confirmed|ignored|resolved>
+  finding-snapshot
+  task-run-export <task_run_id> [full|endpoints|services|webPaths|findings|auth] [json|csv]
+  cloudquery-preview <strategy>
+  cloudquery-sync <json_file|->            cloudquery-sync-batch <json_file|->
+  web-path-rule-create <json_file|->       web-path-rule-update <id> <json_file|->
+  web-path-rule-delete <id>                web-path-rules-reevaluate
+  ai-query <query_text|json_file|->
+  api-key-create <name> [scope1,scope2]    api-key-revoke <key_id>
+  api <GET|POST|PUT|DELETE> <api_path> [json_file|-]
+
+Filter syntax:
+  Use key=value or --key value. Common examples:
+    sasp-cli endpoints --scope public --has-service true --with-service true --page-size 100
+    sasp-cli findings kind=security lifecycle=current severity=critical scope=public dataCategory=database
+    sasp-cli task-runs --task-id <id> --page-size 20
+
+Common CloudQuery strategies:
+  public, private, db-scan, all-ip, db-endpoints
 USAGE
 }
 
+urlencode() {
+  python3 -c 'import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))' "$1"
+}
+
+json_pp() {
+  if [[ -n "$OUT_FILE" ]]; then
+    cat > "$OUT_FILE"
+    echo "saved: $OUT_FILE" >&2
+    return
+  fi
+  if [[ "$RAW_JSON" == "1" ]]; then cat; else python3 -m json.tool 2>/dev/null || cat; fi
+}
+
+read_json_arg() {
+  local src="${1:-}"
+  if [[ -z "$src" ]]; then echo "json_file or - is required" >&2; exit 1; fi
+  if [[ "$src" == "-" ]]; then cat; else cat "$src"; fi
+}
+
+normalize_key() {
+  case "$1" in
+    page-size) echo pageSize ;;
+    show-gone) echo showGone ;;
+    has-service) echo hasService ;;
+    has-web-path) echo hasWebPath ;;
+    with-service) echo withService ;;
+    data-category) echo dataCategory ;;
+    task-id) echo taskId ;;
+    asset-id) echo assetId ;;
+    service-id) echo serviceId ;;
+    only-current) echo lifecycle ;;
+    *) echo "$1" ;;
+  esac
+}
+
+query_from_args() {
+  local first=1 key val
+  while [[ $# -gt 0 ]]; do
+    if [[ "$1" == --* ]]; then
+      key="${1#--}"; key="$(normalize_key "$key")"; shift
+      if [[ $# -gt 0 && "$1" != --* ]]; then val="$1"; shift; else val="true"; fi
+    elif [[ "$1" == *=* ]]; then
+      key="${1%%=*}"; val="${1#*=}"; key="$(normalize_key "$key")"; shift
+    else
+      echo "unexpected filter arg: $1" >&2; exit 1
+    fi
+    [[ "$key" == "lifecycle" && "$val" == "true" ]] && val="current"
+    if [[ $first -eq 1 ]]; then first=0; else printf '&'; fi
+    printf '%s=%s' "$(urlencode "$key")" "$(urlencode "$val")"
+  done
+}
+
+with_query() {
+  local path="$1"; shift || true
+  local qs="$(query_from_args "$@")"
+  if [[ -n "$qs" ]]; then echo "$path?$qs"; else echo "$path"; fi
+}
+
+login_cookie_if_needed() {
+  if [[ -n "$SASP_API_KEY" ]]; then return; fi
+  if [[ -z "$SASP_USER" || -z "$SASP_PASS" ]]; then
+    echo 'set SASP_API_KEY or SASP_USER/SASP_PASS' >&2
+    exit 2
+  fi
+  local body
+  body="$(python3 -c 'import json,os; print(json.dumps({"username":os.environ["SASP_USER"],"password":os.environ["SASP_PASS"]}))')"
+  curl -sS -c "$COOKIE_FILE" -X POST "$SASP_URL/api/auth/login" -H 'Content-Type: application/json' -d "$body" >/dev/null
+}
+
+curl_api_raw() {
+  local method="$1" path="$2" body="${3:-}"
+  login_cookie_if_needed
+  local tmp status args
+  tmp="$(mktemp)"
+  args=(-sS -o "$tmp" -w '%{http_code}' -X "$method" "$SASP_URL$path" -H 'Content-Type: application/json')
+  if [[ -n "$SASP_API_KEY" ]]; then args+=(-H "Authorization: Bearer $SASP_API_KEY"); else args+=(-b "$COOKIE_FILE"); fi
+  if [[ -n "$body" ]]; then args+=(-d "$body"); fi
+  status="$(curl "${args[@]}")"
+  cat "$tmp"
+  rm -f "$tmp"
+  if [[ "$status" =~ ^[0-9]+$ && "$status" -ge 400 ]]; then
+    echo "" >&2
+    echo "HTTP $status $method $path" >&2
+    exit 3
+  fi
+}
+
+curl_api() {
+  curl_api_raw "$@" | json_pp
+}
+
+require_arg() {
+  local value="${1:-}" name="$2"
+  [[ -n "$value" ]] || { echo "$name is required" >&2; exit 1; }
+}
+
+json_body_for_query() {
+  local q="$1"
+  if [[ "$q" == "-" ]]; then cat
+  elif [[ -f "$q" ]]; then cat "$q"
+  else python3 -c 'import json,sys; print(json.dumps({"query":sys.argv[1]}))' "$q"
+  fi
+}
+
+# global options
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --json) JSON=1; shift ;;
+    --url) SASP_URL="${2:-}"; shift 2 ;;
+    --api-key) SASP_API_KEY="${2:-}"; shift 2 ;;
+    --user) SASP_USER="${2:-}"; export SASP_USER; shift 2 ;;
+    --pass) SASP_PASS="${2:-}"; export SASP_PASS; shift 2 ;;
+    --json|--raw) RAW_JSON=1; shift ;;
+    --out) OUT_FILE="${2:-}"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) break ;;
   esac
@@ -61,114 +202,113 @@ done
 cmd="${1:-}"; [[ -n "$cmd" ]] || { usage; exit 1; }
 shift || true
 
-json_pp() {
-  if [[ "$JSON" == "1" ]]; then cat; else python3 -m json.tool 2>/dev/null || cat; fi
-}
-
-read_json_arg() {
-  local src="${1:-}"
-  if [[ -z "$src" ]]; then
-    echo "json_file or - is required" >&2
-    exit 1
-  fi
-  if [[ "$src" == "-" ]]; then
-    cat
-  else
-    cat "$src"
-  fi
-}
-
-curl_api() {
-  local method="$1" path="$2" body="${3:-}"
-  local args=(-sS -X "$method" "$SASP_URL$path" -H 'Content-Type: application/json')
-  if [[ -n "$SASP_API_KEY" ]]; then
-    args+=(-H "Authorization: Bearer $SASP_API_KEY")
-  else
-    if [[ -z "$SASP_USER" || -z "$SASP_PASS" ]]; then
-      echo '{"ok":false,"error":"set SASP_API_KEY or SASP_USER/SASP_PASS"}' >&2
-      exit 2
-    fi
-    curl -sS -c "$COOKIE_FILE" -X POST "$SASP_URL/api/auth/login" -H 'Content-Type: application/json' \
-      -d "$(python3 -c 'import json,os; print(json.dumps({"username":os.environ["SASP_USER"],"password":os.environ["SASP_PASS"]}))')" >/dev/null
-    args+=(-b "$COOKIE_FILE")
-  fi
-  if [[ -n "$body" ]]; then args+=(-d "$body"); fi
-  curl "${args[@]}"
-}
-
 case "$cmd" in
-  status) curl_api GET /api/auth/status | json_pp ;;
-  dashboard) curl_api GET /api/dashboard | json_pp ;;
+  status) curl_api GET /api/auth/status ;;
+  dashboard) curl_api GET /api/dashboard ;;
+  modules) curl_api GET /api/modules ;;
+
   assets)
-    q="${1:-}"; path="/api/assets?pageSize=50"; [[ -n "$q" ]] && path="$path&q=$(python3 -c 'import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))' "$q")"
-    curl_api GET "$path" | json_pp ;;
-  asset-lists) curl_api GET /api/asset-lists | json_pp ;;
-  asset-list-create)
-    src="${1:-}"; body="$(read_json_arg "$src")"
-    curl_api POST /api/asset-lists "$body" | json_pp ;;
-  asset-list-update)
-    id="${1:-}"; src="${2:-}"
-    [[ -n "$id" ]] || { echo 'asset-list-update requires asset_list_id' >&2; exit 1; }
-    body="$(read_json_arg "$src")"
-    curl_api PUT "/api/asset-lists/$id" "$body" | json_pp ;;
-  asset-list-delete)
-    id="${1:-}"; [[ -n "$id" ]] || { echo 'asset-list-delete requires asset_list_id' >&2; exit 1; }
-    curl_api DELETE "/api/asset-lists/$id" | json_pp ;;
-  port-lists) curl_api GET /api/port-lists | json_pp ;;
-  services) curl_api GET /api/services | json_pp ;;
-  endpoints) curl_api GET /api/endpoints | json_pp ;;
-  findings) curl_api GET /api/findings | json_pp ;;
-  tasks) curl_api GET /api/tasks | json_pp ;;
-  task-create)
-    src="${1:-}"; body="$(read_json_arg "$src")"
-    curl_api POST /api/tasks "$body" | json_pp ;;
-  task-update)
-    id="${1:-}"; src="${2:-}"
-    [[ -n "$id" ]] || { echo 'task-update requires task_id' >&2; exit 1; }
-    body="$(read_json_arg "$src")"
-    curl_api PUT "/api/tasks/$id" "$body" | json_pp ;;
-  task-delete)
-    id="${1:-}"; [[ -n "$id" ]] || { echo 'task-delete requires task_id' >&2; exit 1; }
-    curl_api DELETE "/api/tasks/$id" | json_pp ;;
-  runs) curl_api GET /api/runs | json_pp ;;
-  modules) curl_api GET /api/modules | json_pp ;;
-  task-run)
-    id="${1:-}"; [[ -n "$id" ]] || { echo 'task-run requires task_id' >&2; exit 1; }
-    curl_api POST "/api/tasks/$id/run" | json_pp ;;
+    if [[ $# -gt 0 && "$1" != --* && "$1" != *=* ]]; then q="$1"; shift; set -- q="$q" "$@"; fi
+    curl_api GET "$(with_query /api/assets pageSize=50 "$@")" ;;
+  asset-get) id="${1:-}"; require_arg "$id" asset_id; curl_api GET "/api/assets/$id" ;;
+  asset-import) body="$(read_json_arg "${1:-}")"; curl_api POST /api/assets/import "$body" ;;
+
+  asset-lists) curl_api GET /api/asset-lists ;;
+  asset-list-get) id="${1:-}"; require_arg "$id" asset_list_id; curl_api GET "/api/asset-lists/$id" ;;
+  asset-list-create) body="$(read_json_arg "${1:-}")"; curl_api POST /api/asset-lists "$body" ;;
+  asset-list-update) id="${1:-}"; require_arg "$id" asset_list_id; body="$(read_json_arg "${2:-}")"; curl_api PUT "/api/asset-lists/$id" "$body" ;;
+  asset-list-delete) id="${1:-}"; require_arg "$id" asset_list_id; curl_api DELETE "/api/asset-lists/$id" ;;
+  asset-list-export)
+    id="${1:-}"; fmt="${2:-csv}"; require_arg "$id" asset_list_id
+    curl_api_raw GET "/api/asset-lists/$id/export?format=$(urlencode "$fmt")" | json_pp ;;
+
+  port-lists) curl_api GET /api/port-lists ;;
+  port-list-get) id="${1:-}"; require_arg "$id" port_list_id; curl_api GET "/api/port-lists/$id" ;;
+  port-list-create) body="$(read_json_arg "${1:-}")"; curl_api POST /api/port-lists "$body" ;;
+  port-list-update) id="${1:-}"; require_arg "$id" port_list_id; body="$(read_json_arg "${2:-}")"; curl_api PUT "/api/port-lists/$id" "$body" ;;
+  port-list-delete) id="${1:-}"; require_arg "$id" port_list_id; curl_api DELETE "/api/port-lists/$id" ;;
+
+  endpoints) curl_api GET "$(with_query /api/endpoints pageSize=50 "$@")" ;;
+  endpoint-get) id="${1:-}"; require_arg "$id" endpoint_id; curl_api GET "/api/endpoints/$id" ;;
+  endpoint-facets) curl_api GET "$(with_query /api/endpoints/facets "$@")" ;;
+
+  services) curl_api GET "$(with_query /api/services "$@")" ;;
+  service-get) id="${1:-}"; require_arg "$id" service_id; curl_api GET "/api/services/$id" ;;
+  web-paths) curl_api GET "$(with_query /api/web-paths "$@")" ;;
+
+  findings) curl_api GET "$(with_query /api/findings pageSize=50 "$@")" ;;
+  findings-stats) curl_api GET "$(with_query /api/findings/stats "$@")" ;;
+  findings-by-instance) curl_api GET "$(with_query /api/findings/by-instance pageSize=50 "$@")" ;;
+  finding-status) id="${1:-}"; st="${2:-}"; require_arg "$id" finding_id; require_arg "$st" status; body="$(python3 -c 'import json,sys; print(json.dumps({"status":sys.argv[1]}))' "$st")"; curl_api PUT "/api/findings/$id/status" "$body" ;;
+  finding-trend) key="${1:-}"; days="${2:-30}"; require_arg "$key" instance_key; curl_api GET "/api/findings/instance/$(urlencode "$key")/trend?days=$(urlencode "$days")" ;;
+  finding-snapshot) curl_api POST /api/findings/snapshot '{}' ;;
+
+  fingerprint-daily) curl_api GET "$(with_query /api/fingerprint-stats/daily "$@")" ;;
+
+  tasks)
+    if [[ "${1:-}" == "--scheduled" ]]; then curl_api GET /api/tasks?scheduled=true; else curl_api GET /api/tasks; fi ;;
+  task-get) id="${1:-}"; require_arg "$id" task_id; curl_api GET "/api/tasks/$id" ;;
+  task-create) body="$(read_json_arg "${1:-}")"; curl_api POST /api/tasks "$body" ;;
+  task-update) id="${1:-}"; require_arg "$id" task_id; body="$(read_json_arg "${2:-}")"; curl_api PUT "/api/tasks/$id" "$body" ;;
+  task-delete) id="${1:-}"; require_arg "$id" task_id; curl_api DELETE "/api/tasks/$id" ;;
+  task-run) id="${1:-}"; require_arg "$id" task_id; curl_api POST "/api/tasks/$id/run" '{}' ;;
+
+  runs) curl_api GET "$(with_query /api/runs pageSize=50 "$@")" ;;
+  run-report) id="${1:-}"; require_arg "$id" run_id; curl_api GET "/api/runs/$id/report" ;;
+  task-runs) curl_api GET "$(with_query /api/runs/task-runs pageSize=50 "$@")" ;;
+  task-run-report) id="${1:-}"; require_arg "$id" task_run_id; curl_api GET "/api/runs/task-runs/$id/report" ;;
+  task-run-export)
+    id="${1:-}"; type="${2:-full}"; fmt="${3:-}"; require_arg "$id" task_run_id
+    path="/api/runs/task-runs/$id/export?type=$(urlencode "$type")"; [[ -n "$fmt" ]] && path="$path&format=$(urlencode "$fmt")"
+    curl_api_raw GET "$path" | json_pp ;;
+
+  cloudquery-status) curl_api GET /api/sources/cloudquery/status ;;
+  cloudquery-preview) strategy="${1:-}"; require_arg "$strategy" strategy; body="$(python3 -c 'import json,sys; print(json.dumps({"strategy":sys.argv[1]}))' "$strategy")"; curl_api POST /api/sources/cloudquery/preview "$body" ;;
+  cloudquery-sync) body="$(read_json_arg "${1:-}")"; curl_api POST /api/sources/cloudquery/sync "$body" ;;
+  cloudquery-sync-batch) body="$(read_json_arg "${1:-}")"; curl_api POST /api/sources/cloudquery/sync-batch "$body" ;;
+
+  web-path-rules) curl_api GET /api/web-path-rules ;;
+  web-path-rule-create) body="$(read_json_arg "${1:-}")"; curl_api POST /api/web-path-rules "$body" ;;
+  web-path-rule-update) id="${1:-}"; require_arg "$id" rule_id; body="$(read_json_arg "${2:-}")"; curl_api PUT "/api/web-path-rules/$id" "$body" ;;
+  web-path-rule-delete) id="${1:-}"; require_arg "$id" rule_id; curl_api DELETE "/api/web-path-rules/$id" ;;
+  web-path-rules-reevaluate) curl_api POST /api/web-path-rules/reevaluate '{}' ;;
+
   ai-context)
-    q="${1:-}"; path="/api/ai/context"; [[ -n "$q" ]] && path="$path?asset=$(python3 -c 'import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))' "$q")"
-    curl_api GET "$path" | json_pp ;;
-  api-keys) curl_api GET /api/api-keys | json_pp ;;
+    q="${1:-}"; path="/api/ai/context"; [[ -n "$q" ]] && path="$path?asset=$(urlencode "$q")"; curl_api GET "$path" ;;
+  ai-query)
+    q="${1:-}"; require_arg "$q" query_text_or_json; body="$(json_body_for_query "$q")"; curl_api POST /api/ai/query "$body" ;;
+
+  api-keys) curl_api GET /api/api-keys ;;
   api-key-create)
-    name="${1:-}"; scopes="${2:-read:*}"; [[ -n "$name" ]] || { echo 'api-key-create requires name' >&2; exit 1; }
-    body=$(python3 -c 'import json,sys; print(json.dumps({"name":sys.argv[1],"scopes":[s for s in sys.argv[2].split(",") if s]}))' "$name" "$scopes")
-    curl_api POST /api/api-keys "$body" | json_pp ;;
-  api-key-revoke)
-    key_id="${1:-}"; [[ -n "$key_id" ]] || { echo 'api-key-revoke requires key_id' >&2; exit 1; }
-    curl_api DELETE "/api/api-keys/$key_id" | json_pp ;;
+    name="${1:-}"; scopes="${2:-read:*}"; require_arg "$name" name
+    body="$(python3 -c 'import json,sys; print(json.dumps({"name":sys.argv[1],"scopes":[s for s in sys.argv[2].split(",") if s]}))' "$name" "$scopes")"
+    curl_api POST /api/api-keys "$body" ;;
+  api-key-revoke) key_id="${1:-}"; require_arg "$key_id" key_id; curl_api DELETE "/api/api-keys/$key_id" ;;
+
+  api)
+    method="${1:-}"; path="${2:-}"; require_arg "$method" method; require_arg "$path" api_path; shift 2 || true
+    body=""; [[ $# -gt 0 ]] && body="$(read_json_arg "${1:-}")"
+    [[ "$path" == /api/* ]] || path="/api${path#/api}"
+    curl_api "$method" "$path" "$body" ;;
+
   manifest)
     cat <<'JSON'
 {
   "name": "sasp-cli",
-  "commands": [
-    {"name":"assets","description":"List assets","writes":false,"required_scopes":["read:assets"]},
-    {"name":"asset-lists","description":"List asset lists","writes":false,"required_scopes":["read:assets"]},
-    {"name":"asset-list-create","description":"Create an asset list from JSON","writes":true,"required_scopes":["assets:write"]},
-    {"name":"asset-list-update","description":"Update an asset list from JSON","writes":true,"required_scopes":["assets:write"]},
-    {"name":"asset-list-delete","description":"Delete an asset list by id","writes":true,"required_scopes":["assets:write"]},
-    {"name":"port-lists","description":"List port lists","writes":false,"required_scopes":["read:ports"]},
-    {"name":"services","description":"List services","writes":false,"required_scopes":["read:services"]},
-    {"name":"endpoints","description":"List live endpoints","writes":false,"required_scopes":["read:endpoints"]},
-    {"name":"findings","description":"List findings","writes":false,"required_scopes":["read:findings"]},
-    {"name":"tasks","description":"List tasks","writes":false,"required_scopes":["read:tasks"]},
-    {"name":"task-create","description":"Create a task from JSON","writes":true,"required_scopes":["tasks:write"]},
-    {"name":"task-update","description":"Update a task from JSON","writes":true,"required_scopes":["tasks:write"]},
-    {"name":"task-delete","description":"Delete a task by id","writes":true,"required_scopes":["tasks:write"]},
-    {"name":"task-run","description":"Run a task by id","writes":true,"required_scopes":["tasks:write"]},
-    {"name":"ai-context","description":"Get structured AI context for an asset/query","writes":false,"required_scopes":["read:*"]},
-    {"name":"api-key-create","description":"Create an API key; full key is returned once","writes":true,"required_scopes":["api_keys:write"]},
-    {"name":"api-key-revoke","description":"Revoke an API key by key_id","writes":true,"required_scopes":["api_keys:write"]}
-  ]
+  "version": "0.2.0",
+  "auth": ["SASP_API_KEY", "SASP_USER/SASP_PASS"],
+  "read_commands": [
+    "status", "dashboard", "assets", "asset-lists", "port-lists", "endpoints", "services",
+    "web-paths", "findings", "findings-stats", "findings-by-instance", "fingerprint-daily",
+    "tasks", "runs", "task-runs", "modules", "cloudquery-status", "ai-context", "api-keys", "web-path-rules"
+  ],
+  "write_commands": [
+    "asset-list-create", "asset-list-update", "asset-list-delete", "port-list-create", "port-list-update", "port-list-delete",
+    "task-create", "task-update", "task-delete", "task-run", "finding-status", "finding-snapshot",
+    "cloudquery-preview", "cloudquery-sync", "cloudquery-sync-batch", "web-path-rule-create", "web-path-rule-update",
+    "web-path-rule-delete", "web-path-rules-reevaluate", "api-key-create", "api-key-revoke"
+  ],
+  "generic": "api <METHOD> <api_path> [json_file|-]"
 }
 JSON
     ;;
